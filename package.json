@@ -1,0 +1,23 @@
+{
+  "name": "vorflux-openai-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Lightweight OpenAI-compatible proxy node backed by Vorflux AI Cloud (Batch + Sessions APIs). No third-party AI keys required.",
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "npm run build && npm run start"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
