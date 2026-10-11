@@ -41,40 +41,38 @@ export async function getUpstreamModels(
   if (refreshPromise) return refreshPromise;
 
   refreshPromise = (async () => {
-    let res: Response;
+    let models: UpstreamModel[];
     try {
-      res = await fetch(`${VORFLUX_API_BASE}/models`, {
+      const res = await fetch(`${VORFLUX_API_BASE}/models`, {
         headers: authHeaders(),
         signal: AbortSignal.timeout(30_000),
       });
-    } catch (err) {
-      refreshPromise = null;
-      throw new UpstreamError(
-        `Failed to reach Vorflux AI Cloud model list: ${(err as Error).message}`
-      );
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new UpstreamError(
+          `Upstream model list request failed (${res.status}): ${body.slice(0, 300)}`
+        );
+      }
+      const data = (await res.json()) as { models?: UpstreamModel[] };
+      models = (data.models || [])
+        .filter((m) => m && typeof m.modelKey === "string")
+        .map((m) => ({
+          modelKey: m.modelKey,
+          displayName: m.displayName || m.modelKey,
+          supportsThinking: !!m.supportsThinking,
+        }));
+    } finally {
+      // Always clear the in-flight refresh so a rejection (network error,
+      // bad JSON) cannot poison the cache permanently.
+      queueMicrotask(() => {
+        refreshPromise = null;
+      });
     }
-    if (!res.ok) {
-      refreshPromise = null;
-      const body = await res.text().catch(() => "");
-      throw new UpstreamError(
-        `Upstream model list request failed (${res.status}): ${body.slice(0, 300)}`,
-        res.status === 401 || res.status === 403 ? 502 : 502
-      );
-    }
-    const data = (await res.json()) as { models?: UpstreamModel[] };
-    const models = (data.models || [])
-      .filter((m) => m && typeof m.modelKey === "string")
-      .map((m) => ({
-        modelKey: m.modelKey,
-        displayName: m.displayName || m.modelKey,
-        supportsThinking: !!m.supportsThinking,
-      }));
     cache = {
       fetchedAt: Date.now(),
       createdAt: Math.floor(Date.now() / 1000),
       models,
     };
-    refreshPromise = null;
     return models;
   })();
 

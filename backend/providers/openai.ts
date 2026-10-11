@@ -4,6 +4,7 @@ import {
   BATCH_TIMEOUT_MS,
 } from "../utils/config";
 import { UpstreamError } from "../models";
+import { sleep } from "../utils/async";
 
 /**
  * Non-streaming provider: Vorflux AI Cloud Batch API.
@@ -35,8 +36,19 @@ function authHeaders(): Record<string, string> {
 }
 
 async function fetchResultText(resultUrl: string): Promise<string> {
-  // Try authorized first, then the raw (possibly presigned) URL.
-  for (const headers of [authHeaders(), {}]) {
+  // Only send the account key when the URL is on the Vorflux API host;
+  // other hosts get an anonymous request (presigned URLs need no auth).
+  let host: string;
+  try {
+    host = new URL(resultUrl).host;
+  } catch {
+    throw new UpstreamError("Batch result URL is invalid");
+  }
+  const isVorfluxHost = /\.vorflux\.com$/i.test(host);
+  const attempts: Array<Record<string, string>> = isVorfluxHost
+    ? [authHeaders(), {}]
+    : [{}];
+  for (const headers of attempts) {
     try {
       const res = await fetch(resultUrl, {
         headers,
@@ -102,25 +114,42 @@ export async function runBatchCompletion(
 
   const requestId: string = createBody.requestId;
   const deadline = Date.now() + BATCH_TIMEOUT_MS;
+  // Tolerate transient poll errors (network blips, gateway 5xx, bad JSON)
+  // during long-running jobs before giving up.
+  let transientFailures = 0;
+  const MAX_TRANSIENT_FAILURES = 5;
 
   while (Date.now() < deadline) {
     if (signal?.aborted) throw new UpstreamError("Client aborted the request", 499);
     await sleep(UPSTREAM_POLL_INTERVAL_MS, signal);
 
-    let pollRes: Response;
+    let state: BatchStatusResponse | null = null;
     try {
-      pollRes = await fetch(`${VORFLUX_API_BASE}/batch/${requestId}`, {
+      const pollRes = await fetch(`${VORFLUX_API_BASE}/batch/${requestId}`, {
         headers: authHeaders(),
         signal: AbortSignal.timeout(30_000),
       });
+      if (pollRes.ok) {
+        state = (await pollRes.json()) as BatchStatusResponse;
+        transientFailures = 0;
+      } else if (pollRes.status >= 500 || pollRes.status === 429) {
+        transientFailures++;
+      } else {
+        throw new UpstreamError(`Batch polling failed (${pollRes.status})`);
+      }
     } catch (err) {
+      if (err instanceof UpstreamError) throw err;
       if (signal?.aborted) throw new UpstreamError("Client aborted the request", 499);
-      throw new UpstreamError(`Batch polling failed: ${(err as Error).message}`);
+      transientFailures++;
     }
-    if (!pollRes.ok) {
-      throw new UpstreamError(`Batch polling failed (${pollRes.status})`);
+    if (!state) {
+      if (transientFailures >= MAX_TRANSIENT_FAILURES) {
+        throw new UpstreamError(
+          "Batch polling failed repeatedly (transient upstream errors)"
+        );
+      }
+      continue;
     }
-    const state = (await pollRes.json()) as BatchStatusResponse;
 
     if (state.status === "COMPLETED") {
       let content = "";
@@ -147,19 +176,3 @@ export async function runBatchCompletion(
   throw new UpstreamError("Batch request timed out", 504);
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    function onAbort(): void {
-      clearTimeout(t);
-      reject(new UpstreamError("Client aborted the request", 499));
-    }
-    if (signal) {
-      if (signal.aborted) return onAbort();
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-  });
-}

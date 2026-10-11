@@ -65,9 +65,14 @@ app.use((req: Request, res: Response) => {
 
 // ---- Error handler: JSON errors only ----
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  res.status(500).json({
-    error: { message: `Internal server error: ${err.message}`, type: "api_error" },
+app.use((err: Error & { status?: number; type?: string }, _req: Request, res: Response, _next: NextFunction) => {
+  // Body-parser syntax errors (e.g. malformed JSON) carry status 400.
+  const status =
+    typeof err.status === "number" && err.status >= 400 && err.status < 500
+      ? err.status
+      : 500;
+  res.status(status).json({
+    error: { message: `${status === 400 ? "Bad request" : "Internal server error"}: ${err.message}`, type: status === 400 ? "invalid_request_error" : "api_error" },
   });
 });
 

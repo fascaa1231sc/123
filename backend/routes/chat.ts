@@ -9,10 +9,7 @@ import {
   startKeepalive,
   finishSSE,
 } from "../utils/sse";
-import {
-  MAX_OUTPUT_TOKENS,
-  SSE_KEEPALIVE_INTERVAL_MS,
-} from "../utils/config";
+import { SSE_KEEPALIVE_INTERVAL_MS } from "../utils/config";
 import { runBatchCompletion, BatchPermissionError } from "../providers/openai";
 import { runSessionCompletion } from "../providers/anthropic";
 
@@ -55,15 +52,22 @@ export async function chatCompletions(
     }
   }
 
-  // Output token policy: default and maximum are 64000; clamp anything higher.
-  let maxTokens = MAX_OUTPUT_TOKENS;
-  if (typeof body.max_tokens === "number" && body.max_tokens > 0) {
-    maxTokens = Math.min(body.max_tokens, MAX_OUTPUT_TOKENS);
-  }
-  void maxTokens; // the upstream API has no max_tokens knob; the clamp defines the advertised limit.
+  // Output token policy: default and maximum are 64000. The upstream API has
+  // no max_tokens knob, so anything the client sends beyond 64000 has no
+  // effect — 64000 is the advertised hard limit of this node.
 
   // Model resolution (validates against the live upstream catalog).
-  const resolved = await resolveModel(body.model);
+  let resolved;
+  try {
+    resolved = await resolveModel(body.model);
+  } catch (err) {
+    return errorResponse(
+      res,
+      502,
+      `Failed to resolve model: ${(err as Error).message}`,
+      "api_error"
+    );
+  }
   if (!resolved) {
     return errorResponse(
       res,
@@ -189,30 +193,35 @@ export async function chatCompletions(
   }
 
   // ---- Non-streaming ----
+  // Abort upstream polling if the client disconnects mid-request.
+  const controller = new AbortController();
+  req.on("close", () => controller.abort());
   try {
     let content: string;
     let thought = "";
 
     if (useSessions) {
-      const result = await runSessionCompletion(
-        prompt,
-        resolved.upstreamModel,
-        { thinking: resolved.thinking }
-      );
+      const result = await runSessionCompletion(prompt, resolved.upstreamModel, {
+        thinking: resolved.thinking,
+        signal: controller.signal,
+      });
       content = result.content;
       thought = result.thought;
     } else {
       try {
-        const result = await runBatchCompletion(prompt, resolved.upstreamModel);
+        const result = await runBatchCompletion(
+          prompt,
+          resolved.upstreamModel,
+          controller.signal
+        );
         content = result.content;
       } catch (err) {
         if (err instanceof BatchPermissionError) {
           // Upstream key lacks batch permissions — fall back to the Sessions API.
-          const result = await runSessionCompletion(
-            prompt,
-            resolved.upstreamModel,
-            { thinking: false }
-          );
+          const result = await runSessionCompletion(prompt, resolved.upstreamModel, {
+            thinking: false,
+            signal: controller.signal,
+          });
           content = result.content;
         } else {
           throw err;

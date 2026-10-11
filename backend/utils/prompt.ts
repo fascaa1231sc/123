@@ -17,7 +17,7 @@ const MAX_INLINE_BASE64_CHARS = 2_000_000; // ~1.5 MB binary
 /** OpenAI `image_url` -> Anthropic image source shape. */
 export function convertImageUrl(url: string): ImageSource | null {
   if (typeof url !== "string" || url.length === 0) return null;
-  const mData = url.match(/^data:([^;,]+);base64,(.*)$/s);
+  const mData = url.match(/^data:([^;,\s]+);base64,(.*)$/s);
   if (mData) {
     return { type: "base64", mediaType: mData[1], data: mData[2] };
   }

@@ -5,6 +5,7 @@ import {
   THINKING_BUDGET_TOKENS,
 } from "../utils/config";
 import { UpstreamError } from "../models";
+import { sleep } from "../utils/async";
 
 /**
  * Streaming / thinking provider: Vorflux AI Cloud Sessions API.
@@ -39,23 +40,6 @@ function authHeaders(): Record<string, string> {
     Authorization: `Bearer ${process.env.VORFLUX_API_KEY}`,
     "Content-Type": "application/json",
   };
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    function onAbort(): void {
-      clearTimeout(t);
-      reject(new UpstreamError("Client aborted the request", 499));
-    }
-    if (signal) {
-      if (signal.aborted) return onAbort();
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-  });
 }
 
 async function archiveSession(sessionId: string): Promise<void> {
